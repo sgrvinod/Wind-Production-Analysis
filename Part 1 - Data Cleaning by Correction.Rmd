@@ -1,0 +1,282 @@
+---
+title: "Part 1 - Data Cleaning by Correction"
+output: html_document
+---
+###*UNI:sv2414*
+##**NOTE**:
+##**1.This program writes the final output to file. Check "Part1_output.csv" for all values described here**
+##**2.The actual code can be viewed in the Rmd file "Part 1 - Data Cleaning by Correction.Rmd"**
+
+###Check if packages are installed, install if required, and load
+```{r, echo=FALSE}
+if (!require(plyr)) install.packages("plyr")
+library(plyr)
+if (!require(ggplot2)) install.packages("ggplot2")
+library(ggplot2)
+```
+
+###Import CSV file containing wind power generation data
+###*Summary of "Windpower" data frame is shown below:*
+```{r, echo=FALSE}
+windpowercsv<-"WIND_VXE_2013_ORIGINAL.csv"
+windpower<-read.csv(windpowercsv)
+summary(windpower)
+```
+
+###Find initial number of rows
+```{r, echo=FALSE}
+orig_size=nrow(windpower)
+sprintf("There are %d rows.",orig_size)
+```
+
+###Remove columns I don't need
+###*Updated summary:*
+```{r, echo=FALSE}
+windpower<-windpower[-c(2:15,17,18)]
+summary(windpower)
+```
+
+###Rename columns
+###*Updated summary:*
+```{r, echo=FALSE}
+names(windpower)[1]<-"DateTime"
+names(windpower)[2]<-"AvgWindSpeed"
+names(windpower)[3]<-"MeterReading"
+summary(windpower)
+```
+
+###Convert DateTime to Date-Time values (useful for Part 2)
+```{r, echo=FALSE}
+windpower$DateTime<-as.POSIXct(windpower$DateTime,format="%m/%d/%Y %H:%M")
+```
+
+###Check for negative values
+```{r, echo=FALSE}
+negstat=0
+if(summary(windpower$AvgWindSpeed)[1]>=0) {
+  print("No negative values found in Wind Speed values.")
+  } else {
+  print("Negative values found in Wind Speed values.")
+  negstat=1
+  }
+if(summary(windpower$MeterReading)[1]>=0) {
+  print("No negative values found in Meter Reading values.")
+  } else {
+  print("Negative values found in Meter Reading values.")
+  negstat=1
+  }
+```
+
+###Convert negative values, if any, to NA
+```{r, echo=FALSE}
+if(negstat==1){
+  windpower$AvgWindSpeed[windpower$AvgWindSpeed<0]<-NA
+  windpower$MeterReading[windpower$MeterReading<0]<-NA
+}
+```
+
+###Convert missing and negative Wind Speed values to 0
+###(This is because wind speeds are assumed to be faulty and can be corrected (need not be removed))
+```{r, echo=FALSE}
+windpower$AvgWindSpeed[which(is.na(windpower$AvgWindSpeed))]<-0
+```
+
+###Print total number of faulty values found in preliminary cleaning
+```{r, echo=FALSE}
+sprintf("Total number of missing or negative values is %d", sum(is.na(windpower)))
+print("These are contained in the following rows:")
+windpower[which(is.na(windpower$MeterReading)),]
+print("Omitting these...")
+windpower<-na.omit(windpower)
+sprintf("After omission of missing values, there are now %d observations remaining.", nrow(windpower))
+```
+
+###Add new column for kWh delivered in 10 minutes
+###*Summary of "tenminkwh" column is shown below:*
+```{r, echo=FALSE}
+windpower$tenminkwh<-0
+for(i in 2:nrow(windpower)){
+  windpower$tenminkwh[i]=windpower$MeterReading[i]-windpower$MeterReading[i-1]
+  #Since the meter resets after reaching maximum reading
+  if(windpower$MeterReading[i]<windpower$MeterReading[i-1]){
+    windpower$tenminkwh[i]=9999999-windpower$MeterReading[i-1]+windpower$MeterReading[i]
+  }
+}
+summary(windpower$tenminkwh)
+```
+
+###Remove power generated values greater than rated capacity
+```{r, echo=FALSE}
+windpower$tenminkwh[windpower$tenminkwh>850*7/6]<-NA
+print("Omitting these...")
+windpower<-na.omit(windpower)
+sprintf("After omission of missing values, there are now %d observations remaining.", nrow(windpower))
+```
+
+###Import CSV file containing Manufacturer's PowerCurve
+###*Summary of "mpc" data frame is shown below:*
+```{r, echo=FALSE}
+manpc<-"v52-850KW-power-curve.csv"
+mpc<-read.csv(manpc)
+summary(mpc)
+```
+
+###Rename columns
+###*Updated summary:*
+```{r, echo=FALSE}
+names(mpc)[1]<-"WindSpeed"
+names(mpc)[2]<-"Power"
+summary(mpc)
+```
+
+###WE ARE ASSUMING METER READINGS ARE CORRECT AND WIND VALUES *MAY* BE FAULTY
+###Add new column for 10min generation according to MPC, Betz Limit, Kinetic Energy of Wind
+###This is just to examine inconsistencies in a plot
+###*Summary of "tenminmpcurve", "tenminbetz", "tenminKEwind" columns are shown below:*
+```{r, echo=FALSE}
+interp=splinefun(mpc$WindSpeed, mpc$Power,method = "natural")
+windpower$tenminmpcurve<-interp(windpower$AvgWindSpeed)*(7/6)
+windpower$tenminmpcurve[windpower$tenminmpcurve<0]<-0
+windpower$tenminbetz<-0.593*0.5*1.225*2124*((windpower$AvgWindSpeed)^3)*(7/6000)
+windpower$tenminKEwind<-1*0.5*1.225*2124*((windpower$AvgWindSpeed)^3)*(7/6000)
+summary(windpower$tenminmpcurve)
+summary(windpower$tenminbetz)
+summary(windpower$tenminKEwind)
+
+```
+
+###Plot to see inconsistencies
+```{r, echo=FALSE}
+plot1<-ggplot(windpower, aes(x=AvgWindSpeed))
+plot1+geom_point(aes(y=windpower$tenminkwh),colour="yellow",size=1)+geom_line(aes(y=windpower$tenminmpcurve),colour="blue")+geom_line(aes(y=windpower$tenminbetz),colour="red")+geom_line(aes(y=windpower$tenminKEwind),colour="black")+ylim(0,1000)+ylab("Ten Min Generation (kWh)")+xlab("Average Wind Speed (m/s)")+ggtitle("Ten Min Generation Data After PRELIMINARY Cleaning\nYellow=Data | Blue=MPC | Red=BetzLimit | Black=KEinWind")
+```
+---
+###Everything above the MPC should be moved to the MPC
+###Add a column to calculate equivalent power in KW for ten minute intervals
+###*Summary of "eqPower" column is shown below:*
+```{r, echo=FALSE}
+windpower$eqPower=windpower$tenminkwh*(6/7)
+summary(windpower$eqPower)
+```
+
+###Import CSV file containing Manufacturer's PowerCurve sorted by Power and cleaned
+###(This is because we are interpolating for wind speed based on power)
+###*Summary of "mpc2" data frame is shown below:*
+```{r, echo=FALSE}
+manpc2<-"mpc_powersort.csv"
+mpc2<-read.csv(manpc2)
+summary(mpc2)
+```
+
+###Rename columns
+###*Updated summary:*
+```{r, echo=FALSE}
+names(mpc2)[1]<-"Power"
+names(mpc2)[2]<-"WindSpeed"
+summary(mpc2)
+```
+
+###Add a column to interpolate for wind values based on MPC
+###*Summary of "mpcWind" column is shown below:*
+```{r, echo=FALSE}
+interp2=splinefun(x = mpc2$Power,y = mpc2$WindSpeed,method = "natural")
+windpower$mpcWind=interp2(windpower$eqPower)
+windpower$mpcWind[windpower$mpcWind<0]<-0
+summary(windpower$mpcWind)
+```
+
+###Add a new column for final cleaned wind speed values
+###Compare measured and interpolated wind values, and correct
+###*Summary of "finalWSvalue" column is shown below:*
+```{r, echo=FALSE}
+windpower$finalWSvalue<-0
+for (i in 1:nrow(windpower)){
+  if(windpower$AvgWindSpeed[i]<windpower$mpcWind[i]){
+    windpower$finalWSvalue[i]=windpower$mpcWind[i]
+  }
+  else{
+    windpower$finalWSvalue[i]=windpower$AvgWindSpeed[i]
+  }
+}
+summary(windpower$finalWSvalue)
+```
+
+###Plot to see cleaned results
+```{r, echo=FALSE}
+plot2<-ggplot(windpower, aes(x=finalWSvalue))
+plot2+geom_point(aes(y=windpower$tenminkwh),colour="yellow",size=1)+geom_line(aes(x=windpower$AvgWindSpeed,y=windpower$tenminmpcurve),colour="blue")+geom_line(aes(x=windpower$AvgWindSpeed,y=windpower$tenminbetz),colour="red")+geom_line(aes(x=windpower$AvgWindSpeed,y=windpower$tenminKEwind),colour="black")+ylim(0,1000)+ylab("Ten Min Generation (kWh)")+xlab("Average Wind Speed (m/s)")+ggtitle("Ten Min Generation Data After FINAL Cleaning\nYellow=Data | Blue=MPC | Red=BetzLimit | Black=KEinWind")
+```
+---
+###This is satisfactory; everything is on or below the MPC!
+###Add new rows for actual and uncurtailed generation
+###*Summary of "ActualGenerationkWh", "UncurtailedGenerationkWh" columns are shown below:*
+```{r, echo=FALSE}
+windpower$ActualGenerationkWh=windpower$tenminkwh
+windpower$UncurtailedGenerationkWh=interp(windpower$finalWSvalue)*(7/6)
+summary(windpower$ActualGenerationkWh)
+summary(windpower$UncurtailedGenerationkWh)
+```
+
+###Calculate total annual actual and uncurtailed generation
+```{r, echo=FALSE}
+tot_act_gen=sum(windpower$ActualGenerationkWh)
+tot_unc_gen=sum(windpower$UncurtailedGenerationkWh)
+sprintf("ANNUAL GENERATION IS %.2fkWh",tot_act_gen)
+sprintf("ANNUAL UNCURTAILED GENERATION IS %.2fkWh",tot_unc_gen)
+```
+
+###Calculate total possible generation at nameplate capacity (850kW)
+```{r, echo=FALSE}
+tot_np=850*7*8760
+```
+
+###Calculate actual and uncurtailed Capacity Factors
+```{r, echo=FALSE}
+act_cp=tot_act_gen*100/tot_np
+unc_cp=tot_unc_gen*100/tot_np
+sprintf("ACTUAL CAPACITY FACTOR IS %.1fpc",act_cp)
+sprintf("UNCURTAILED CAPACITY FACTOR IS %.1fpc",unc_cp)
+```
+
+###Add a column for Kinetic Energy in wind at cleaned values of wind speeds
+###*Summary of "KEinWind" column is shown below:*
+```{r, echo=FALSE}
+windpower$KEinWind=1*0.5*1.225*2124*((windpower$finalWSvalue)^3)*(7/6000)
+summary(windpower$KEinWind)
+```
+
+###Add a column for Turbine Efficiency
+###*Summary of "TurbineEfficiency" column is shown below:*
+```{r, echo=FALSE}
+windpower$TurbineEfficiency=windpower$ActualGenerationkWh*100/windpower$KEinWind
+summary(windpower$TurbineEfficiency)
+```
+
+###Calculate average Turbine Efficiency for the year
+```{r, echo=FALSE}
+avg_te=sum(windpower$ActualGenerationkWh)*100/sum(windpower$KEinWind)
+sprintf("Average Turbine Efficiency for the year is %.2fpc",avg_te)
+```
+
+###Plot turbine efficiency and compare to Betz Limit
+```{r, echo=FALSE}
+plot3<-ggplot(windpower, aes(x=finalWSvalue))
+plot3+geom_point(aes(y=windpower$TurbineEfficiency),colour="yellow",size=1)+geom_line(aes(y=avg_te),colour="blue")+geom_line(aes(y=59.3),colour="red")+ylim(0,100)+ylab("Turbine Efficiency (%)")+xlab("Average Wind Speed (m/s)")+ggtitle("Turbine Efficiency\nYellow=EfficiencyData | Blue=AverageEfficiency | Red=BetzLimit")
+```
+---
+###It looks to be right!
+###Find final number of rows
+```{r, echo=FALSE}
+fin_size=nrow(windpower)
+sprintf("Final number of rows (after all cleaning) is %d",fin_size)
+sprintf("Total number of rows omitted is %d",orig_size-fin_size)
+```
+
+###Write data to file (to be used in Part 2)
+```{r, echo=FALSE}
+write.csv(windpower,"Part1_output.csv")
+sprintf("Printed to: Part1_output.csv")
+```
+##**FINAL COMMENTS:**
+##**1.The actual, uncurtailed capacity factors and the turbine efficiency is found to be as expected (40.7%, 52.4%. 28.3%).**
+##**2. The number of observations after cleaning is nearly the same as before. Negligible difference.**

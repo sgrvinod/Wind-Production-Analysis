@@ -1,0 +1,246 @@
+---
+title: "Part 2"
+output: html_document
+---
+###*UNI:sv2414*
+##**NOTE**:
+##**1.This program writes the final output to file. Check "Part2_output.csv" for all values described here**
+##**2.The actual code can be viewed in the Rmd file "Part 2.Rmd"**
+##**3.Calculations here are based on Uncurtailed Power Generation values obtained in Part 1 (cleaning by correction). The same calculations can also be done using Actual Power** Generation values.
+
+###Check if packages are installed, install if required, and load
+```{r, echo=FALSE}
+if (!require(plyr)) install.packages("plyr")
+library(plyr)
+if (!require(ggplot2)) install.packages("ggplot2")
+library(ggplot2)
+if (!require(reshape2)) install.packages("reshape2")
+library(reshape2)
+```
+
+###Import CSV file containing demand data
+###*Summary of "dd" data frame is shown below*:
+```{r, echo=FALSE}
+ddata<-"island_demand_data.csv"
+dd<-read.csv(ddata)
+summary(dd)
+```
+
+###Rename columns
+###*Updated summary:*
+```{r, echo=FALSE}
+names(dd)[1]<-"DateTime"
+names(dd)[2]<-"Demand"
+summary(dd)
+```
+
+###Import CSV file containing supply data (from part 1)
+###*Summary of "sd" data frame is shown below*:
+```{r, echo=FALSE}
+sdata<-"Part1_output.csv"
+sd<-read.csv(sdata)
+summary(sd)
+```
+
+###Remove columns I don't need
+###*Updated summary:*
+```{r, echo=FALSE}
+sd<-sd[-c(1,3:11,14,15)]
+summary(sd)
+```
+
+###Convert DateTime to Date-Time values 
+```{r, echo=FALSE}
+sd$DateTime<-as.POSIXct(sd$DateTime,format="%Y-%m-%d %H:%M:%S")
+```
+
+###There are missing rows in the supply data, I need to correct this
+###I create a new data frame "fulldf" with all 8760times6 timestamps
+###*Summary of "fulldf" data frame is shown below*:
+```{r, echo=FALSE}
+start<-as.POSIXct("2013-1-1 00:00:00",format="%Y-%m-%d %H:%M:%S")
+full <- seq(start, by='600 sec', length=8760*6)
+fulldf<-data.frame(full)
+summary(fulldf)
+```
+
+###Rename column
+###*Updated summary*
+```{r, echo=FALSE}
+names(fulldf)[1]<-"DateTime"
+summary(fulldf)
+```
+
+###I now merge "fulldf" with "sd" to get a complete supply data frame with all timestamps
+###*Summary of "compsd" data frame is shown below*:
+```{r, echo=FALSE}
+compsd<-merge(x = fulldf,y = sd,by="DateTime",all.x=TRUE)
+summary(compsd)
+```
+
+###Convert NAs to 0s in compsd
+###*Updated summary:*
+```{r, echo=FALSE}
+compsd$ActualGenerationkWh[which(is.na(compsd$ActualGenerationkWh))]<-0
+compsd$UncurtailedGenerationkWh[which(is.na(compsd$UncurtailedGenerationkWh))]<-0
+summary(compsd)
+```
+
+###Now, I'm ready to start summing 10min intervals to get hourly intervals
+###Create new data frame "ad" for all data
+###I add demand (from "dd") and supply data (from"compsd") to "ad"
+###*Summary of "ad" data frame is shown below*:
+```{r, echo=FALSE}
+ad<-dd
+for(i in 1:nrow(ad))
+  ad$UncurtailedSupply[i]<-sum(compsd$UncurtailedGenerationkWh[((i*6)-5):(i*6)])
+summary(ad)
+```
+
+###Add a new row and calculate curtailment
+###*Summary of "Curtailment" column is shown below*:
+```{r, echo=FALSE}
+ad$Curtailment=ad$UncurtailedSupply-ad$Demand
+ad$Curtailment[ad$Curtailment<0]<-0
+summary(ad$Curtailment)
+```
+
+###Create data frame for storing 12*24 curtailment values
+```{r, echo=FALSE}
+curt <- data.frame(matrix(0, ncol = 12, nrow = 24))
+for(i in 1:ncol(curt)){
+  names(curt)[i]<-i
+}
+```
+
+###For consistency, ensure DateTime is of class POSIXct
+```{r, echo=FALSE}
+ad$DateTime<-as.POSIXct(ad$DateTime,format="%Y-%m-%d %H:%M:%S")
+```
+
+###Now, I calculate mean hourly curtailment for each hour slot for each month
+###(I do this by converting the DateTime stamps to POSIXlt, which is stored as a list and individual elements (month, hour) can be accessed)
+###*Mean hourly curtailment for each hour slot for each month is shown:*
+```{r, echo=FALSE}
+for(i in 1:nrow(curt)){
+  for(j in 1:ncol(curt)){
+    sub <- subset(ad, (as.POSIXlt(DateTime,format="%Y-%m-%d %H:%M:%S"))$mon==(j-1) & (as.POSIXlt(DateTime,format="%Y-%m-%d %H:%M:%S"))$hour==(i-1), select=c(DateTime,Curtailment))
+    curt[i,j]=sum(sub$Curtailment)/nrow(sub)
+  }
+}
+curt
+```
+
+###Plot mean hourly curtailment values
+```{r, echo=FALSE}
+dum<-data.frame("hour"=c(1:24))
+dum2<-cbind(curt,dum)
+dum2 <- melt(dum2, id.vars="hour")
+plot1<-ggplot(dum2, aes(hour,value, shape=variable,color=variable)) 
+plot1+geom_point(size=3)+geom_line()+xlab("Hour")+ylab("Mean Hourly Curtailment (kWh)")+ggtitle("Mean Hourly Curtailment for each Hour for Each Month\n(Numbers in legend represent month)")
+```
+---
+
+###Now, to find how storage affects the system
+###I will use the following method:
+![Pseudocode for calculating effect of storage](storage_pseudocode.jpg)
+
+###Add a column to find difference between supply and demand (supply minus demand)
+###*Summary of "Diff" column is shown below*:
+```{r, echo=FALSE}
+ad$Diff=ad$UncurtailedSupply-ad$Demand
+summary(ad$Diff)
+```
+
+###I separate the positive and negative differences in "Diff"
+###(I do this to visualise storage inputs and outputs easily)
+###*Summary of "PosDiff" and "NegDiff" columns are shown below*:
+```{r, echo=FALSE}
+for(i in 1:nrow(ad)){
+  if(ad$Diff[i]>=0){
+    ad$PosDiff[i]=ad$Diff[i]
+  }
+  else ad$PosDiff[i]=0
+}
+for(i in 1:nrow(ad)){
+  if(ad$Diff[i]<0){
+    ad$NegDiff[i]=ad$Diff[i]
+  }
+  else ad$NegDiff[i]=0
+}
+summary(ad$PosDiff)
+summary(ad$NegDiff)
+```
+
+###Add a column for how much is stored
+###(Everything that flows in (PosDiff) is multiplied by 0.85, and everything that flows out (NegDiff) is divided by 0.9)
+###(Limits of 0 and 5000 are maintained)
+###(Check pseudocode/code for details)
+###*Summary of "storage" column is shown below*:
+```{r, echo=FALSE}
+ad$storage[1]=0.85*ad$Diff[1]
+if(ad$storage[1]<0){
+  ad$storage[1]=0
+}
+if(ad$storage[1]>5000){
+  ad$storage[1]=5000
+}
+for(i in 2:nrow(ad)){
+  if(ad$Diff[i]>=0){
+    ad$storage[i]=ad$storage[i-1]+(0.85*ad$Diff[i])
+  }
+  if(ad$Diff[i]<0){
+    ad$storage[i]=ad$storage[i-1]+((ad$Diff[i])/0.9)
+  }
+  if(ad$storage[i]<0){
+    ad$storage[i]=0
+  }
+  if(ad$storage[i]>5000){
+    ad$storage[i]=5000
+  }
+}
+summary(ad$storage)
+```
+
+###Add a column for total supplied kWh (from generation+storage)
+###(Here, I calculate what is effectively supplied to the grid each hour)
+###(Check pseudocode/code for details)
+###*Summary of "TotkWhSupplied" column is shown below*:
+```{r, echo=FALSE}
+if(ad$Diff[1]>=0){
+  ad$TotkWhSupplied[1]=ad$Demand[1]
+}
+if(ad$Diff[1]<0){
+  ad$TotkWhSupplied[1]=ad$UncurtailedSupply[1]
+}
+for (i in 2:nrow(ad)){
+  if(ad$Diff[i]>=0){
+    ad$TotkWhSupplied[i]=ad$Demand[i]
+  }
+  if(ad$Diff[i]<0){
+    ad$TotkWhSupplied[i]=ad$UncurtailedSupply[i]+((ad$storage[i-1]-ad$storage[i])*0.9)
+  }
+}
+summary(ad$TotkWhSupplied)
+```
+
+###Find Capacity Factors with and without storage
+```{r, echo=FALSE}
+withoutst_cf=(sum(ad$UncurtailedSupply)-sum(ad$Curtailment))*100/(8760*850*7)
+withst_cf=(sum(ad$TotkWhSupplied))*100/(8760*850*7)
+sprintf("Capacity factor WITHOUT storage is %.2fpc", withoutst_cf)
+sprintf("Capacity factor WITH storage is %.2fpc", withst_cf)
+```
+
+###Write data to file
+```{r, echo=FALSE}
+write.csv(ad,"Part2_output.csv")
+sprintf("Printed to: Part2_output.csv")
+```
+
+##**FINAL COMMENTS:**
+##**1. Uncurtailed Capacity factors are calculated considering compatibility with grid demand, both with and without storage.**
+##**2. The CF considering demand WITHOUT storage is the least at 52.08%. This is expected because of "curtailment" losses.**
+##**3. The CF considering demand WITH storage is higher, at 52.28%. This is expected because "curtailment" losses are redirected back to the grid after storage (with small efficiency losses).**
+##**4. The CF from Part 1 was 52.4%. This, as expected, is the highest since "curtailment" losses are not considered.**
+##**5. However, as apparent, the difference between these CFs is small. This is because "curtailment" losses are small compared to total generation. (In most cases, demand is greater than supply.) Also, the effect of the storage, while present, is small, since it rarely gets filled. It is an improvement, but by a small margin.**
